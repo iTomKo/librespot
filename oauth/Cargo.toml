@@ -37,6 +37,7 @@ oauth2 = { version = "5.0", default-features = false, features = [
 open = "5.3"
 reqwest = { version = "0.12", default-features = false, features = [
     "system-proxy",
+		"rustls-tls-native-roots"
 ] }
 thiserror = "2"
 url = "2.5"
