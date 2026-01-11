@@ -310,7 +310,8 @@ impl OAuthClient {
     /// Generates and opens/shows the authorization URL to obtain an access token.
     ///
     /// Returns a verifier that must be included in the final request for validation.
-    fn set_auth_url(&self) -> PkceCodeVerifier {
+    /// Modified return type for Outify
+    pub fn set_auth_url(&self) -> (oauth2::url::Url, PkceCodeVerifier) {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         // Generate the full authorization URL.
         // Some of these scopes are unavailable for custom client IDs. Which?
@@ -326,9 +327,9 @@ impl OAuthClient {
         if self.should_open_url {
             open::that_in_background(auth_url.as_str());
         }
-        print_browse_to(auth_url.as_str());
+        //println!("Browse to: {auth_url}");
 
-        pkce_verifier
+        (auth_url,pkce_verifier)
     }
 
     fn build_token(
@@ -340,7 +341,7 @@ impl OAuthClient {
 
     /// Syncronously obtain a Spotify access token using the authorization code with PKCE OAuth flow.
     pub fn get_access_token(&self) -> Result<OAuthToken, OAuthError> {
-        let pkce_verifier = self.set_auth_url();
+        let (_, pkce_verifier) = self.set_auth_url();
 
         let code = match get_socket_address(&self.redirect_uri) {
             Some(addr) => get_authcode_listener(addr, self.message.clone()),
@@ -382,7 +383,7 @@ impl OAuthClient {
 
     /// Asyncronously obtain a Spotify access token using the authorization code with PKCE OAuth flow.
     pub async fn get_access_token_async(&self) -> Result<OAuthToken, OAuthError> {
-        let pkce_verifier = self.set_auth_url();
+        let (_, pkce_verifier) = self.set_auth_url();
 
         let code = match get_socket_address(&self.redirect_uri) {
             Some(addr) => get_authcode_listener(addr, self.message.clone()),
