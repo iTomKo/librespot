@@ -24,6 +24,7 @@ impl FromStr for Bitrate {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialOrd, Ord, PartialEq, Eq, Default)]
+#[repr(C)]
 pub enum AudioFormat {
     F64,
     F32,

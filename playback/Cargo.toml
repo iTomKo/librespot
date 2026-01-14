@@ -10,7 +10,7 @@ edition.workspace = true
 
 [features]
 # Refer to the workspace Cargo.toml for the list of features
-default = ["rodio-backend", "native-tls"]
+default = ["android-backend", "native-tls"]
 
 # Audio backends
 alsa-backend = ["dep:alsa"]
@@ -25,6 +25,7 @@ pulseaudio-backend = ["dep:libpulse-binding", "dep:libpulse-simple-binding"]
 rodio-backend = ["dep:cpal", "dep:rodio"]
 rodiojack-backend = ["dep:rodio", "cpal/jack"]
 sdl-backend = ["dep:sdl2"]
+android-backend = []
 
 # Audio processing features
 passthrough-decoder = ["dep:ogg"]

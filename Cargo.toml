@@ -36,7 +36,7 @@ repository = "https://github.com/librespot-org/librespot"
 edition = "2024"
 
 [features]
-default = ["native-tls", "rodio-backend", "with-libmdns"]
+default = ["native-tls", "android-backend", "with-libmdns"]
 
 # TLS backends (mutually exclusive - compile-time checks in oauth/src/lib.rs)
 # Note: Feature validation is in oauth crate since it's compiled first in the dependency tree.
