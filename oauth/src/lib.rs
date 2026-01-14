@@ -346,6 +346,21 @@ impl OAuthClient {
         self.build_token(resp)
     }
 
+    /// Modified for Outify: added a way to pass in the pkce_verifier
+    /// Asyncronously obtain a Spotify access token using the authorization code with PKCE OAuth flow.
+    pub async fn get_access_token_with_verifier_async(&self, pkce_verifier: PkceCodeVerifier, code: AuthorizationCode) -> Result<OAuthToken, OAuthError> {
+        let http_client = reqwest::Client::new();
+        let resp = self
+            .client
+            .exchange_code(code)
+            .set_pkce_verifier(pkce_verifier)
+            .request_async(&http_client)
+            .await;
+
+        let resp = resp.map_err(|e| OAuthError::ExchangeCode { e: e.to_string() })?;
+        self.build_token(resp)
+    }
+
     /// Asynchronously obtain a new valid OAuth token from `refresh_token`
     pub async fn refresh_token_async(&self, refresh_token: &str) -> Result<OAuthToken, OAuthError> {
         let refresh_token = RefreshToken::new(refresh_token.to_string());

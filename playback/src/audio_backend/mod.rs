@@ -85,6 +85,11 @@ mod alsa;
 #[cfg(feature = "alsa-backend")]
 use self::alsa::AlsaSink;
 
+#[cfg(feature = "android-backend")]
+pub mod android;
+#[cfg(feature = "android-backend")]
+pub use self::android::{AndroidSink,PcmCallback};
+
 #[cfg(feature = "portaudio-backend")]
 mod portaudio;
 #[cfg(feature = "portaudio-backend")]
@@ -138,6 +143,8 @@ pub const BACKENDS: &[(&str, SinkBuilder)] = &[
     ("rodiojack", rodio::mk_rodiojack),
     #[cfg(feature = "sdl-backend")]
     (SdlSink::NAME, mk_sink::<SdlSink>),
+    #[cfg(feature = "android-backend")]
+    (AndroidSink::NAME, mk_sink::<AndroidSink>),
     (StdoutSink::NAME, mk_sink::<StdoutSink>),
     (SubprocessSink::NAME, mk_sink::<SubprocessSink>),
 ];
