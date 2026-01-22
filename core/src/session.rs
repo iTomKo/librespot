@@ -160,6 +160,36 @@ impl Session {
         }))
     }
 
+    pub fn with_handle(config: SessionConfig, cache: Option<Cache>, handle: tokio::runtime::Handle) -> Self{
+        let http_client = HttpClient::new(config.proxy.as_ref());
+
+        debug!("new Session with custom handle");
+
+        let session_data = SessionData {
+            client_id: config.client_id.clone(),
+            // can be any guid, doesn't need to be simple
+            session_id: Uuid::new_v4().as_simple().to_string(),
+            ..SessionData::default()
+        };
+
+        Self(Arc::new(SessionInternal {
+            config,
+            data: RwLock::new(session_data),
+            http_client,
+            tx_connection: OnceLock::new(),
+            cache: cache.map(Arc::new),
+            apresolver: OnceLock::new(),
+            audio_key: OnceLock::new(),
+            channel: OnceLock::new(),
+            mercury: OnceLock::new(),
+            dealer: OnceLock::new(),
+            spclient: OnceLock::new(),
+            token_provider: OnceLock::new(),
+            login5: OnceLock::new(),
+            handle,
+        }))
+    }
+
     async fn connect_inner(
         &self,
         access_point: &SocketAddress,

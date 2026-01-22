@@ -36,7 +36,7 @@ repository = "https://github.com/librespot-org/librespot"
 edition = "2024"
 
 [features]
-default = ["native-tls", "android-backend", "with-libmdns"]
+default = ["rustls-tls-webpki-roots", "android-backend", "with-libmdns"]
 
 # TLS backends (mutually exclusive - compile-time checks in oauth/src/lib.rs)
 # Note: Feature validation is in oauth crate since it's compiled first in the dependency tree.
@@ -69,6 +69,8 @@ rustls-tls-webpki-roots = [
     "librespot-core/rustls-tls-webpki-roots",
     "librespot-oauth/rustls-tls-webpki-roots",
 ]
+
+android-backend = ["librespot-playback/android-backend"]
 
 # Audio backends - see README.md for audio backend selection guide
 # Cross-platform backends:
