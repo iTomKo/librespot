@@ -11,7 +11,7 @@ build = "build.rs"
 
 [features]
 # Refer to the workspace Cargo.toml for the list of features
-default = ["native-tls"]
+default = ["rustls-tls-webpki-roots"]
 
 # TLS backends (mutually exclusive - see oauth/src/lib.rs for compile-time checks)
 # Note: Validation is in oauth since it's compiled first in the dependency tree.
@@ -99,7 +99,7 @@ tokio = { version = "1", features = [
     "io-util",
     "macros",
     "net",
-    "rt",
+    "rt-multi-thread",
     "sync",
     "time",
 ] }
