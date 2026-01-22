@@ -976,6 +976,7 @@ impl PlayerTrackLoader {
         track_uri: SpotifyUri,
         position_ms: u32,
     ) -> Option<PlayerLoadedTrackData> {
+        debug!("Loading remote track");
         let track_id: SpotifyId = match (&track_uri).try_into() {
             Ok(id) => id,
             Err(_) => {

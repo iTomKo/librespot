@@ -313,9 +313,11 @@ impl SpClient {
                                 match self.client_token_request(&answer_message).await {
                                     Ok(token) => {
                                         response = token;
+                                        info!("Hash cash accepted");
                                         continue;
                                     }
                                     Err(e) => {
+                                        info!("Hash cash not accepted");
                                         trace!("Answer not accepted {count}/{MAX_TRIES}: {e}");
                                     }
                                 }
@@ -371,6 +373,7 @@ impl SpClient {
         });
 
         trace!("Got client token: {granted_token:?}");
+        info!("Got client token: {granted_token:?}");
 
         Ok(access_token)
     }
@@ -484,6 +487,8 @@ impl SpClient {
                 );
             }
 
+            info!("SpClient requesting {url}");
+
             let mut request = Request::builder()
                 .method(method)
                 .uri(url)
@@ -491,7 +496,14 @@ impl SpClient {
                 .body(Bytes::copy_from_slice(body))?;
 
             // Reconnection logic: keep getting (cached) tokens because they might have expired.
-            let token = self.session().login5().auth_token().await?;
+            info!("SpClient pre token");
+            //let token = self.session().login5().auth_token().await?;
+            let token_type: &str = "access";
+            let auth_data = self.session().auth_data();
+            let access_token = String::from_utf8(auth_data)
+                .unwrap_or_else(|_| String::new());
+
+            info!("SpClient post token: {access_token}");
 
             let headers_mut = request.headers_mut();
             if let Some(ref headers) = headers {
@@ -502,7 +514,7 @@ impl SpClient {
 
             headers_mut.insert(
                 AUTHORIZATION,
-                HeaderValue::from_str(&format!("{} {}", token.token_type, token.access_token,))?,
+                HeaderValue::from_str(&format!("{} {}", token_type, access_token,))?,
             );
 
             match self.client_token().await {
@@ -514,8 +526,10 @@ impl SpClient {
                     warn!("Unable to get client token: {e} Trying to continue without...")
                 }
             }
+            info!("SpClient post headers");
 
             last_response = self.session().http_client().request_body(request).await;
+            info!("SpClient post response");
 
             if last_response.is_ok() {
                 return last_response;
@@ -605,7 +619,9 @@ impl SpClient {
             ..Default::default()
         };
 
+        info!("Pre extended metadata..");
         let mut res = self.get_extended_metadata(req).await?;
+        info!("Post extended metadata..");
         let mut extended_metadata = res
             .extended_metadata
             .pop()

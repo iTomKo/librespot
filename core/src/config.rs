@@ -3,8 +3,8 @@ use std::{fmt, path::PathBuf, str::FromStr};
 use librespot_protocol::devices::DeviceType as ProtoDeviceType;
 use url::Url;
 
-pub(crate) const KEYMASTER_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
-pub(crate) const ANDROID_CLIENT_ID: &str = "9a8d2f0ce77a4e248bb71fefcb557637";
+pub const KEYMASTER_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
+pub const ANDROID_CLIENT_ID: &str = "9a8d2f0ce77a4e248bb71fefcb557637";
 pub(crate) const IOS_CLIENT_ID: &str = "58bd3c95768941ea9eb4350aaa033eb3";
 
 // Easily adjust the current platform to mock the behavior on it. If for example
