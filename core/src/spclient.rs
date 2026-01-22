@@ -373,7 +373,6 @@ impl SpClient {
         });
 
         trace!("Got client token: {granted_token:?}");
-        info!("Got client token: {granted_token:?}");
 
         Ok(access_token)
     }
@@ -496,14 +495,7 @@ impl SpClient {
                 .body(Bytes::copy_from_slice(body))?;
 
             // Reconnection logic: keep getting (cached) tokens because they might have expired.
-            info!("SpClient pre token");
-            //let token = self.session().login5().auth_token().await?;
-            let token_type: &str = "access";
-            let auth_data = self.session().auth_data();
-            let access_token = String::from_utf8(auth_data)
-                .unwrap_or_else(|_| String::new());
-
-            info!("SpClient post token: {access_token}");
+            let token = self.session().login5().auth_token().await?;
 
             let headers_mut = request.headers_mut();
             if let Some(ref headers) = headers {
@@ -514,7 +506,7 @@ impl SpClient {
 
             headers_mut.insert(
                 AUTHORIZATION,
-                HeaderValue::from_str(&format!("{} {}", token_type, access_token,))?,
+                HeaderValue::from_str(&format!("{} {}", token.token_type, token.access_token,))?,
             );
 
             match self.client_token().await {

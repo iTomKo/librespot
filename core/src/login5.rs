@@ -59,9 +59,7 @@ impl From<Login5Error> for Error {
 
 impl Login5Manager {
     async fn request(&self, message: &LoginRequest) -> Result<Bytes, Error> {
-        info!("Getting client token");
         let client_token = self.session().spclient().client_token().await?;
-        info!("Got client token: {client_token}");
         let body = message.write_to_bytes()?;
 
         let request = Request::builder()
