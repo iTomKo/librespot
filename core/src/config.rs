@@ -11,7 +11,8 @@ pub(crate) const IOS_CLIENT_ID: &str = "58bd3c95768941ea9eb4350aaa033eb3";
 // android or ios needs to be mocked, the `os_version` has to be set to a valid version.
 // Otherwise, client-token or login5 requests will fail with a generic invalid-credential error.
 /// See [std::env::consts::OS]
-pub const OS: &str = std::env::consts::OS;
+pub const OS: &str = "linux"; // We have to mock Linux, otherwise Spotify will not accept our
+// request
 
 // valid versions for some os:
 // 'android': 30
