@@ -42,7 +42,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
-use tokio::{sync::mpsc, time::sleep};
+use tokio::{
+    sync::{broadcast, mpsc},
+    time::sleep,
+};
 
 #[derive(Debug, Error)]
 enum SpircError {
@@ -73,6 +76,8 @@ struct SpircTask {
     player: Arc<Player>,
     mixer: Arc<dyn Mixer>,
 
+    pub runtime_event_tx: Option<mpsc::Sender<PlayerEvent>>, // Added for Outify
+
     /// the state management object
     connect_state: ConnectState,
     connect_established: bool,
@@ -91,7 +96,7 @@ struct SpircTask {
     user_attributes_mutation: BoxedStreamResult<UserAttributesMutation>,
 
     commands: Option<mpsc::UnboundedReceiver<SpircCommand>>,
-    player_events: Option<PlayerEventChannel>,
+    pub player_events: Option<PlayerEventChannel>,
 
     context_resolver: ContextResolver,
 
@@ -146,6 +151,10 @@ const UPDATE_STATE_DELAY: Duration = Duration::from_millis(200);
 /// The spotify connect handle
 pub struct Spirc {
     commands: mpsc::UnboundedSender<SpircCommand>,
+
+    // Added for Outify
+    pub events: broadcast::Sender<PlayerEvent>,
+    pub runtime_event_tx: Option<mpsc::Sender<PlayerEvent>>,
 }
 
 impl Spirc {
@@ -161,6 +170,7 @@ impl Spirc {
         credentials: Credentials,
         player: Arc<Player>,
         mixer: Arc<dyn Mixer>,
+        runtime_event_tx: Option<mpsc::Sender<PlayerEvent>>,
     ) -> Result<(Spirc, impl Future<Output = ()>), Error> {
         fn extract_connection_id(msg: Message) -> Result<String, Error> {
             let connection_id = msg
@@ -225,9 +235,13 @@ impl Spirc {
 
         let player_events = player.get_player_event_channel();
 
+        // Added for Outify
+        let (events_tx, _events_rx) = broadcast::channel::<PlayerEvent>(32); // Added
         let mut task = SpircTask {
             player,
             mixer,
+
+            runtime_event_tx: runtime_event_tx.clone(),
 
             connect_state,
             connect_established: false,
@@ -259,7 +273,11 @@ impl Spirc {
             spirc_id,
         };
 
-        let spirc = Spirc { commands: cmd_tx };
+        let spirc = Spirc {
+            commands: cmd_tx,
+            events: events_tx,
+            runtime_event_tx,
+        };
 
         let initial_volume = task.connect_state.device_info().volume;
         task.connect_state.set_volume(0);
@@ -705,7 +723,26 @@ impl SpircTask {
         self.notify().await
     }
 
+    // Added for Outify
+    // Sends the received player event using mpsc to the FFI
+    fn forward_event(&mut self, event: &PlayerEvent) {
+        if let Some(tx) = &self.runtime_event_tx {
+            if let Err(e) = tx.try_send(event.clone()) {
+                match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                        warn!("runtime event receiver full; dropping player event");
+                    }
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                        warn!("runtime receiver closed; disabling runtime_tx");
+                        self.runtime_event_tx = None;
+                    }
+                }
+            }
+        }
+    }
+
     fn handle_player_event(&mut self, event: PlayerEvent) -> Result<(), Error> {
+        self.forward_event(&event);
         if let PlayerEvent::TrackChanged { audio_item } = event {
             self.connect_state.update_duration(audio_item.duration_ms);
             self.update_state = true;
