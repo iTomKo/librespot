@@ -73,29 +73,22 @@ impl AudioItem {
             .get_user_attribute("image-url")
             .unwrap_or_else(|| String::from("https://i.scdn.co/image/{file_id}"));
 
-        info!("Getting file (A)");
-
         match uri {
             SpotifyUri::Track { .. } => {
-                info!("Getting file (A2)");
                 let track = Track::get(session, &uri).await?;
-                info!("Getting file (B)");
 
                 if track.duration <= 0 {
                     return Err(Error::unavailable(MetadataError::InvalidDuration(
                         track.duration,
                     )));
                 }
-                info!("Getting file (C)");
 
                 if track.is_explicit && session.filter_explicit_content() {
                     return Err(Error::unavailable(MetadataError::ExplicitContentFiltered));
                 }
-                info!("Getting file (D)");
 
                 let uri_string = uri.to_uri();
                 let album = track.album.name;
-                info!("Getting file (E)");
 
                 let album_artists = track
                     .album
@@ -122,8 +115,6 @@ impl AudioItem {
                         &track.restrictions,
                     )
                 };
-
-                info!("Getting file (F)");
 
                 let popularity = track.popularity.clamp(0, 100) as u8;
                 let number = track.number.max(0) as u32;

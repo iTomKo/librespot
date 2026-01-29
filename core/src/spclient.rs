@@ -486,8 +486,6 @@ impl SpClient {
                 );
             }
 
-            info!("SpClient requesting {url}");
-
             let mut request = Request::builder()
                 .method(method)
                 .uri(url)
@@ -518,10 +516,8 @@ impl SpClient {
                     warn!("Unable to get client token: {e} Trying to continue without...")
                 }
             }
-            info!("SpClient post headers");
 
             last_response = self.session().http_client().request_body(request).await;
-            info!("SpClient post response");
 
             if last_response.is_ok() {
                 return last_response;
@@ -611,9 +607,7 @@ impl SpClient {
             ..Default::default()
         };
 
-        info!("Pre extended metadata..");
         let mut res = self.get_extended_metadata(req).await?;
-        info!("Post extended metadata..");
         let mut extended_metadata = res
             .extended_metadata
             .pop()

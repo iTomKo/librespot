@@ -64,7 +64,6 @@ impl Metadata for Track {
         };
 
         let uri = track_uri.to_uri();
-        info!("Requesting {uri} as a rack");
 
         session.spclient().get_track_metadata(track_uri).await
     }
