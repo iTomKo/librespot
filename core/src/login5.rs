@@ -73,7 +73,6 @@ impl Login5Manager {
     }
 
     async fn login5_request(&self, login: Login_method) -> Result<LoginOk, Error> {
-        info!("Login5 Req");
         let client_id = match OS {
             "macos" | "windows" => self.session().client_id(),
             // StoredCredential is used to get an access_token from Session credentials.
@@ -101,7 +100,6 @@ impl Login5Manager {
             count += 1;
 
             let message = LoginResponse::parse_from_bytes(&response)?;
-            info!("response: {message}");
             if let Some(Response::Ok(ok)) = message.response {
                 break Ok(ok);
             }
@@ -146,7 +144,6 @@ impl Login5Manager {
             // by manipulating the user-agent and client-id it can be also used/tested on desktop
             return Err(Login5Error::OnlyForMobile.into());
         }
-        info!("logging in using {OS}");
 
         let method = Login_method::Password(Password {
             id: id.into(),
@@ -160,8 +157,6 @@ impl Login5Manager {
             token_response.access_token_expires_in,
         );
 
-
-        info!("Request end");
         Ok((auth_token, token_response.stored_credential))
     }
 
@@ -171,9 +166,7 @@ impl Login5Manager {
     /// stored credentials generated with the keymaster client-id will not work, for example, with
     /// the android client-id.
     pub async fn auth_token(&self) -> Result<Token, Error> {
-        info!("Using auth_token!");
         let client_id = self.session().client_id();
-        info!("ClientID: {client_id}");
         let auth_data = self.session().auth_data();
         if auth_data.is_empty() {
             return Err(Login5Error::NoStoredCredentials.into());

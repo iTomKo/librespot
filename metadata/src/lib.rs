@@ -48,11 +48,8 @@ pub trait Metadata: Send + Sized + 'static {
 
     // Request a metadata struct
     async fn get(session: &Session, id: &SpotifyUri) -> Result<Self, Error> {
-        info!("Requesting (a)..");
         let response = Self::request(session, id).await?;
-        info!("Requesting (b)..");
         let msg = Self::Message::parse_from_bytes(&response)?;
-        info!("Requesting (c)..");
         trace!("Received metadata: {msg:#?}");
         Self::parse(&msg, id)
     }
