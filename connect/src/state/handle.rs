@@ -38,6 +38,7 @@ impl ConnectState {
         self.set_next_tracks(set_queue.next_tracks);
         self.set_prev_tracks(set_queue.prev_tracks);
         self.update_queue_revision();
+        info!("set queue!");
     }
 
     pub fn handle_set_repeat_context(&mut self, repeat: bool) -> Result<(), Error> {

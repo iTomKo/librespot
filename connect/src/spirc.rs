@@ -43,7 +43,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::{
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, oneshot},
     time::sleep,
 };
 
@@ -142,6 +142,10 @@ enum SpircCommand {
     Load(LoadRequest),
     AddToQueue(SpotifyUri),
     ClearQueue,
+
+    // Added for Outify
+    GetPreviousTracks(oneshot::Sender<Option<Vec<ProvidedTrack>>>),
+    GetNextTracks(oneshot::Sender<Option<Vec<ProvidedTrack>>>),
 }
 
 const CONTEXT_FETCH_THRESHOLD: usize = 2;
@@ -465,6 +469,24 @@ impl Spirc {
             .commands
             .send(SpircCommand::Transfer(transfer_request))?)
     }
+
+    /// Added for Outify
+    ///
+    /// Retrieves Vec of ProvidedTrack
+    pub async fn next_tracks(&self) -> Option<Vec<ProvidedTrack>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.commands.send(SpircCommand::GetNextTracks((tx)));
+        rx.await.ok().flatten()
+    }
+
+    /// Added for Outify
+    ///
+    /// Retrieves Vec of ProvidedTrack
+    pub async fn prev_tracks(&self) -> Option<Vec<ProvidedTrack>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.commands.send(SpircCommand::GetPreviousTracks((tx)));
+        rx.await.ok().flatten()
+    }
 }
 
 impl SpircTask {
@@ -780,6 +802,15 @@ impl SpircTask {
             SpircCommand::ClearQueue => {
                 self.connect_state.clear_queue()?;
                 self.emit_set_queue_event();
+
+            // Added for Outify
+            SpircCommand::GetNextTracks(sender) => {
+                let tracks = self.connect_state.player().next_tracks.clone();
+                let _ = sender.send(Some(tracks));
+            },
+            SpircCommand::GetPreviousTracks(sender) => {
+                let tracks = self.connect_state.player().prev_tracks.clone();
+                let _ = sender.send(Some(tracks));
             }
         };
 
