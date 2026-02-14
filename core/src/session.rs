@@ -115,6 +115,9 @@ struct SessionInternal {
     cache: Option<Arc<Cache>>,
 
     handle: tokio::runtime::Handle,
+
+    // Added for Outify: detecting session shutdown
+    shutdown_tx: tokio::sync::watch::Sender<()>,
 }
 
 /// A shared reference to a Spotify session.
@@ -142,6 +145,8 @@ impl Session {
             ..SessionData::default()
         };
 
+        let (shutdown_tx, _) = tokio::sync::watch::channel(());
+
         Self(Arc::new(SessionInternal {
             config,
             data: RwLock::new(session_data),
@@ -157,6 +162,8 @@ impl Session {
             token_provider: OnceLock::new(),
             login5: OnceLock::new(),
             handle: tokio::runtime::Handle::current(),
+
+            shutdown_tx,
         }))
     }
 
@@ -171,6 +178,8 @@ impl Session {
             session_id: Uuid::new_v4().as_simple().to_string(),
             ..SessionData::default()
         };
+
+        let (shutdown_tx, _) = tokio::sync::watch::channel(());
 
         Self(Arc::new(SessionInternal {
             config,
@@ -187,6 +196,7 @@ impl Session {
             token_provider: OnceLock::new(),
             login5: OnceLock::new(),
             handle,
+            shutdown_tx
         }))
     }
 
@@ -668,8 +678,16 @@ impl Session {
     pub fn shutdown(&self) {
         debug!("Shutdown: Invalidating session");
         self.0.data.write().expect(SESSION_DATA_POISON_MSG).invalid = true;
+
+        let _ = self.0.shutdown_tx.send(());
+
         self.mercury().shutdown();
         self.channel().shutdown();
+    }
+
+    // Added for Outify: to detect session shutdown
+    pub fn subscribe_shutdown(&self) -> tokio::sync::watch::Receiver<()> {
+        self.0.shutdown_tx.subscribe()
     }
 
     pub fn is_invalid(&self) -> bool {
