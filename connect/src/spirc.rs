@@ -861,15 +861,18 @@ impl SpircTask {
                     self.connect_state
                         .update_position(position_ms, self.now_ms());
                     trace!("==> LoadingPlay");
+                    self.forward_event(&PlayerEvent::BufferStart {  });
                 }
                 SpircPlayStatus::LoadingPause { position_ms } => {
                     self.connect_state
                         .update_position(position_ms, self.now_ms());
                     trace!("==> LoadingPause");
+                    self.forward_event(&PlayerEvent::BufferStart {  });
                 }
                 _ => {
                     self.connect_state.update_position(0, self.now_ms());
                     trace!("==> Loading");
+                    self.forward_event(&PlayerEvent::BufferStart {  });
                 }
             },
             PlayerEvent::Seeked { position_ms, .. } => {
@@ -879,6 +882,7 @@ impl SpircTask {
             }
             PlayerEvent::Playing { position_ms, .. }
             | PlayerEvent::PositionCorrection { position_ms, .. } => {
+                self.forward_event(&PlayerEvent::BufferStop {  });
                 trace!("==> Playing");
                 let new_nominal_start_time = self.now_ms() - position_ms as i64;
                 match self.play_status {

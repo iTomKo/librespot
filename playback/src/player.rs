@@ -268,6 +268,12 @@ pub enum PlayerEvent {
         next_tracks: Vec<QueueTrack>,
         prev_tracks: Vec<QueueTrack>,
     },
+    /// Added for Outify
+    AddedToQueue {
+        track_id: String
+    },
+    BufferStart {},
+    BufferStop {},
 }
 
 impl PlayerEvent {
