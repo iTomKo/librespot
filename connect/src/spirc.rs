@@ -145,6 +145,7 @@ enum SpircCommand {
     // Added for Outify
     GetPreviousTracks(oneshot::Sender<Option<Vec<ProvidedTrack>>>),
     GetNextTracks(oneshot::Sender<Option<Vec<ProvidedTrack>>>),
+    SetQueue(Vec<SpotifyUri>, Option<PlayingTrack>),
 }
 
 const CONTEXT_FETCH_THRESHOLD: usize = 2;
@@ -475,6 +476,19 @@ impl Spirc {
         self.commands.send(SpircCommand::GetPreviousTracks((tx)));
         rx.await.ok().flatten()
     }
+
+    /// Added for Outify
+    ///
+    /// Sets the queue without triggering a full context reload
+    pub fn set_queue(
+        &self,
+        tracks: Vec<SpotifyUri>,
+        playing_track: Option<PlayingTrack>,
+    ) -> Result<(), Error> {
+        Ok(self
+            .commands
+            .send(SpircCommand::SetQueue(tracks, playing_track))?)
+    }
 }
 
 impl SpircTask {
@@ -792,10 +806,13 @@ impl SpircTask {
             SpircCommand::GetNextTracks(sender) => {
                 let tracks = self.connect_state.player().next_tracks.clone();
                 let _ = sender.send(Some(tracks));
-            },
+            }
             SpircCommand::GetPreviousTracks(sender) => {
                 let tracks = self.connect_state.player().prev_tracks.clone();
                 let _ = sender.send(Some(tracks));
+            }
+            SpircCommand::SetQueue(tracks, playing_track) => {
+                self.handle_set_queue(tracks, playing_track).await?
             }
         };
 
@@ -861,18 +878,18 @@ impl SpircTask {
                     self.connect_state
                         .update_position(position_ms, self.now_ms());
                     trace!("==> LoadingPlay");
-                    self.forward_event(&PlayerEvent::BufferStart {  });
+                    self.forward_event(&PlayerEvent::BufferStart {});
                 }
                 SpircPlayStatus::LoadingPause { position_ms } => {
                     self.connect_state
                         .update_position(position_ms, self.now_ms());
                     trace!("==> LoadingPause");
-                    self.forward_event(&PlayerEvent::BufferStart {  });
+                    self.forward_event(&PlayerEvent::BufferStart {});
                 }
                 _ => {
                     self.connect_state.update_position(0, self.now_ms());
                     trace!("==> Loading");
-                    self.forward_event(&PlayerEvent::BufferStart {  });
+                    self.forward_event(&PlayerEvent::BufferStart {});
                 }
             },
             PlayerEvent::Seeked { position_ms, .. } => {
@@ -882,7 +899,7 @@ impl SpircTask {
             }
             PlayerEvent::Playing { position_ms, .. }
             | PlayerEvent::PositionCorrection { position_ms, .. } => {
-                self.forward_event(&PlayerEvent::BufferStop {  });
+                self.forward_event(&PlayerEvent::BufferStop {});
                 trace!("==> Playing");
                 let new_nominal_start_time = self.now_ms() - position_ms as i64;
                 match self.play_status {
@@ -1722,6 +1739,69 @@ impl SpircTask {
             self.connect_state.add_to_queue(track, true);
         }
         self.emit_set_queue_event();
+    }
+
+    // Added for Outify - Sets the queue without triggering a full context reload
+    async fn handle_set_queue(
+        &mut self,
+        track_uris: Vec<SpotifyUri>,
+        playing_track: Option<PlayingTrack>,
+    ) -> Result<(), Error> {
+        let position_ms = match self.play_status {
+            SpircPlayStatus::Playing {
+                nominal_start_time, ..
+            } => (self.now_ms() - nominal_start_time) as u32,
+            SpircPlayStatus::Paused { position_ms, .. } => position_ms,
+            SpircPlayStatus::LoadingPlay { position_ms }
+            | SpircPlayStatus::LoadingPause { position_ms } => position_ms,
+            _ => 0,
+        };
+
+        let start_playing = matches!(
+            self.play_status,
+            SpircPlayStatus::Playing { .. } | SpircPlayStatus::LoadingPlay { .. }
+        );
+
+        let all_tracks: Vec<ProvidedTrack> = track_uris
+            .into_iter()
+            .map(|uri| ProvidedTrack {
+                uri: uri.to_uri(),
+                ..Default::default()
+            })
+            .collect();
+
+        let (prev_tracks, next_tracks, target_index) = if let Some(playing_track) = playing_track {
+            let idx = match playing_track {
+                PlayingTrack::Index(i) => i as usize,
+                PlayingTrack::Uri(ref uri) => {
+                    all_tracks.iter().position(|t| &t.uri == uri).unwrap_or(0)
+                }
+                PlayingTrack::Uid(ref uid) => {
+                    all_tracks.iter().position(|t| &t.uid == uid).unwrap_or(0)
+                }
+            };
+            let (prev, next) = all_tracks.split_at(idx);
+            (prev.to_vec(), next.to_vec(), Some(idx))
+        } else {
+            (vec![], all_tracks, None)
+        };
+
+        self.connect_state.clear_prev_track();
+        self.connect_state.set_prev_tracks(prev_tracks);
+        self.connect_state.clear_next_tracks();
+        self.connect_state.set_next_tracks(next_tracks);
+
+        if let Some(idx) = target_index {
+            self.connect_state.set_current_track(idx)?;
+            self.connect_state.fill_up_next_tracks()?;
+            if start_playing {
+                self.handle_play();
+            }
+            self.player.seek(position_ms);
+        }
+
+        self.emit_set_queue_event();
+        Ok(())
     }
 
     fn handle_preload_next_track(&mut self) {
