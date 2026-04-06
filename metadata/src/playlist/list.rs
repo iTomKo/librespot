@@ -37,6 +37,7 @@ pub struct Playlist {
     pub is_up_to_date: bool,
     pub nonces: Vec<i64>,
     pub timestamp: Date,
+    pub owner_username: String,
     pub has_abuse_reporting: bool,
     pub capabilities: Capabilities,
     pub geoblocks: Geoblocks,
@@ -109,10 +110,11 @@ impl Metadata for Playlist {
 
         // the playlist proto doesn't contain the id so we decorate it
         let playlist = SelectedListContent::try_from(msg)?;
+        let username = playlist.owner_username;
 
         let new_uri = SpotifyUri::Playlist {
             id: *playlist_id,
-            user: Some(playlist.owner_username),
+            user: Some(username.clone()),
         };
 
         Ok(Self {
@@ -128,6 +130,7 @@ impl Metadata for Playlist {
             is_up_to_date: playlist.is_up_to_date,
             nonces: playlist.nonces,
             timestamp: playlist.timestamp,
+            owner_username: username,
             has_abuse_reporting: playlist.has_abuse_reporting,
             capabilities: playlist.capabilities,
             geoblocks: playlist.geoblocks,
