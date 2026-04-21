@@ -922,6 +922,7 @@ impl SpircTask {
                             nominal_start_time: new_nominal_start_time,
                             preloading_of_next_track_triggered: false,
                         };
+                        self.forward_event(&PlayerEvent::BufferStop {});
                     }
                     _ => return Ok(()),
                 }
@@ -931,28 +932,27 @@ impl SpircTask {
                 ..
             } => {
                 trace!("==> Paused");
+                self.forward_event(&PlayerEvent::BufferStop {});
                 match self.play_status {
                     SpircPlayStatus::Paused { .. } | SpircPlayStatus::Playing { .. } => {
                         self.connect_state
                             .update_position(new_position_ms, self.now_ms());
-                        self.play_status = SpircPlayStatus::Paused {
-                            position_ms: new_position_ms,
-                            preloading_of_next_track_triggered: false,
-                        };
                     }
                     SpircPlayStatus::LoadingPlay { .. } | SpircPlayStatus::LoadingPause { .. } => {
                         self.connect_state
                             .update_position(new_position_ms, self.now_ms());
-                        self.play_status = SpircPlayStatus::Paused {
-                            position_ms: new_position_ms,
-                            preloading_of_next_track_triggered: false,
-                        };
                     }
                     _ => return Ok(()),
                 }
+
+                self.play_status = SpircPlayStatus::Paused {
+                    position_ms: new_position_ms,
+                    preloading_of_next_track_triggered: false,
+                };
             }
             PlayerEvent::Stopped { .. } => {
                 trace!("==> Stopped");
+                self.forward_event(&PlayerEvent::BufferStop {});
                 match self.play_status {
                     SpircPlayStatus::Stopped => return Ok(()),
                     _ => self.play_status = SpircPlayStatus::Stopped,
