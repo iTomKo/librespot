@@ -79,3 +79,44 @@ impl From<OffsetDateTime> for Date {
         Self(datetime)
     }
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ReleaseDate {
+    pub year: i32,
+    pub month: Option<u8>,
+    pub day: Option<u8>,
+}
+
+impl TryFrom<&DateMessage> for ReleaseDate {
+    type Error = crate::Error;
+
+    fn try_from(msg: &DateMessage) -> Result<Self, Self::Error> {
+        let year = msg.year();
+
+        if !msg.has_month() {
+            return Ok(Self {
+                year,
+                month: None,
+                day: None,
+            });
+        }
+
+        let month = msg.month() as u8;
+
+        if !msg.has_day() {
+            return Ok(Self {
+                year,
+                month: Some(month),
+                day: None,
+            });
+        }
+
+        let day = msg.day() as u8;
+
+        Ok(Self {
+            year,
+            month: Some(month),
+            day: Some(day),
+        })
+    }
+}
