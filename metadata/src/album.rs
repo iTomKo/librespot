@@ -17,7 +17,10 @@ use crate::{
     util::{impl_deref_wrapped, impl_try_from_repeated},
 };
 
-use librespot_core::{Error, Session, SpotifyUri, date::Date};
+use librespot_core::{
+    Error, Session, SpotifyUri,
+    date::{Date, ReleaseDate},
+};
 
 use librespot_protocol as protocol;
 use protocol::metadata::Disc as DiscMessage;
@@ -31,6 +34,7 @@ pub struct Album {
     pub album_type: AlbumType,
     pub label: String,
     pub date: Date,
+    pub release_date: ReleaseDate,
     pub popularity: i32,
     pub covers: Images,
     pub external_ids: ExternalIds,
@@ -97,6 +101,7 @@ impl TryFrom<&<Self as Metadata>::Message> for Album {
             album_type: album.type_(),
             label: album.label().to_owned(),
             date: album.date.get_or_default().try_into()?,
+            release_date: album.date.get_or_default().try_into()?,
             popularity: album.popularity(),
             covers: album.cover_group.get_or_default().into(),
             external_ids: album.external_id.as_slice().into(),
