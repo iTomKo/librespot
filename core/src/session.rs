@@ -167,7 +167,11 @@ impl Session {
         }))
     }
 
-    pub fn with_handle(config: SessionConfig, cache: Option<Cache>, handle: tokio::runtime::Handle) -> Self{
+    pub fn with_handle(
+        config: SessionConfig,
+        cache: Option<Cache>,
+        handle: tokio::runtime::Handle,
+    ) -> Self {
         let http_client = HttpClient::new(config.proxy.as_ref());
 
         debug!("new Session with custom handle");
@@ -196,7 +200,7 @@ impl Session {
             token_provider: OnceLock::new(),
             login5: OnceLock::new(),
             handle,
-            shutdown_tx
+            shutdown_tx,
         }))
     }
 
