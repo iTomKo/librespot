@@ -1,18 +1,13 @@
-use zerocopy::IntoBytes;
-use super::{Sink, Open, SinkAsBytes, SinkError, SinkResult};
+use super::{Open, Sink, SinkAsBytes, SinkError, SinkResult};
+use crate::config::AudioFormat;
 use crate::convert::Converter;
 use crate::decoder::AudioPacket;
-use crate::config::AudioFormat;
 use crate::{NUM_CHANNELS, SAMPLE_RATE};
 use std::sync::OnceLock;
+use zerocopy::IntoBytes;
 
-pub type PcmCallback = extern "C" fn(
-    data: *const u8,
-    len: usize,
-    sample_rate: u32,
-    channels: u8,
-    format: AudioFormat,
-);
+pub type PcmCallback =
+    extern "C" fn(data: *const u8, len: usize, sample_rate: u32, channels: u8, format: AudioFormat);
 // Global PCM callback
 static PCM_CALLBACK: OnceLock<PcmCallback> = OnceLock::new();
 
@@ -58,7 +53,13 @@ impl Sink for AndroidSink {
         };
 
         if let Some(cb) = PCM_CALLBACK.get() {
-            cb(bytes.as_ptr(), bytes.len(), SAMPLE_RATE, NUM_CHANNELS, self.format);
+            cb(
+                bytes.as_ptr(),
+                bytes.len(),
+                SAMPLE_RATE,
+                NUM_CHANNELS,
+                self.format,
+            );
             Ok(())
         } else {
             Err(SinkError::NotConnected(
@@ -71,7 +72,13 @@ impl Sink for AndroidSink {
 impl SinkAsBytes for AndroidSink {
     fn write_bytes(&mut self, data: &[u8]) -> SinkResult<()> {
         if let Some(cb) = PCM_CALLBACK.get() {
-            cb(data.as_ptr(), data.len(), SAMPLE_RATE, NUM_CHANNELS, self.format);
+            cb(
+                data.as_ptr(),
+                data.len(),
+                SAMPLE_RATE,
+                NUM_CHANNELS,
+                self.format,
+            );
             Ok(())
         } else {
             Err(SinkError::NotConnected(
@@ -80,4 +87,3 @@ impl SinkAsBytes for AndroidSink {
         }
     }
 }
-

@@ -320,7 +320,7 @@ impl OAuthClient {
         }
         //println!("Browse to: {auth_url}");
 
-        (auth_url,pkce_verifier)
+        (auth_url, pkce_verifier)
     }
 
     fn build_token(
@@ -396,7 +396,11 @@ impl OAuthClient {
 
     /// Modified for Outify: added a way to pass in the pkce_verifier
     /// Asyncronously obtain a Spotify access token using the authorization code with PKCE OAuth flow.
-    pub async fn get_access_token_with_verifier_async(&self, pkce_verifier: PkceCodeVerifier, code: AuthorizationCode) -> Result<OAuthToken, OAuthError> {
+    pub async fn get_access_token_with_verifier_async(
+        &self,
+        pkce_verifier: PkceCodeVerifier,
+        code: AuthorizationCode,
+    ) -> Result<OAuthToken, OAuthError> {
         let http_client = reqwest::Client::new();
         let resp = self
             .client

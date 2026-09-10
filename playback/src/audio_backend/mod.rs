@@ -88,7 +88,7 @@ use self::alsa::AlsaSink;
 #[cfg(feature = "android-backend")]
 pub mod android;
 #[cfg(feature = "android-backend")]
-pub use self::android::{AndroidSink,PcmCallback};
+pub use self::android::{AndroidSink, PcmCallback};
 
 #[cfg(feature = "portaudio-backend")]
 mod portaudio;

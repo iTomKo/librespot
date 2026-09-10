@@ -270,7 +270,7 @@ pub enum PlayerEvent {
     },
     /// Added for Outify
     AddedToQueue {
-        track_id: String
+        track_id: String,
     },
     BufferStart {},
     BufferStop {},
