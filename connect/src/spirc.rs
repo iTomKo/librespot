@@ -143,8 +143,11 @@ enum SpircCommand {
     AddToQueue(SpotifyUri),
 
     // Added for Outify
-    GetPreviousTracks(oneshot::Sender<Option<Vec<ProvidedTrack>>>),
-    GetNextTracks(oneshot::Sender<Option<Vec<ProvidedTrack>>>),
+
+    /// Provided Track : Is Queued
+    GetPreviousTracks(oneshot::Sender<Option<Vec<(ProvidedTrack, bool)>>>),
+    /// Provided Track : Is Queued
+    GetNextTracks(oneshot::Sender<Option<Vec<(ProvidedTrack, bool)>>>),
     SetQueue(Vec<SpotifyUri>, Option<PlayingTrack>),
 }
 
@@ -462,7 +465,7 @@ impl Spirc {
     /// Added for Outify
     ///
     /// Retrieves Vec of ProvidedTrack
-    pub async fn next_tracks(&self) -> Option<Vec<ProvidedTrack>> {
+    pub async fn next_tracks(&self) -> Option<Vec<(ProvidedTrack, bool)>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.commands.send(SpircCommand::GetNextTracks((tx)));
         rx.await.ok().flatten()
@@ -471,7 +474,7 @@ impl Spirc {
     /// Added for Outify
     ///
     /// Retrieves Vec of ProvidedTrack
-    pub async fn prev_tracks(&self) -> Option<Vec<ProvidedTrack>> {
+    pub async fn prev_tracks(&self) -> Option<Vec<(ProvidedTrack, bool)>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.commands.send(SpircCommand::GetPreviousTracks((tx)));
         rx.await.ok().flatten()
@@ -805,11 +808,29 @@ impl SpircTask {
             // Added for Outify
             SpircCommand::GetNextTracks(sender) => {
                 let tracks = self.connect_state.player().next_tracks.clone();
-                let _ = sender.send(Some(tracks));
+
+                let tracks_with_status : Vec<_> = tracks
+                    .into_iter()
+                    .map(|t| {
+                        let is_queued = t.is_queue();
+                        (t, is_queued)
+                    })
+                .collect();
+
+                let _ = sender.send(Some(tracks_with_status));
             }
             SpircCommand::GetPreviousTracks(sender) => {
                 let tracks = self.connect_state.player().prev_tracks.clone();
-                let _ = sender.send(Some(tracks));
+
+                let tracks_with_status : Vec<_> = tracks
+                    .into_iter()
+                    .map(|t| {
+                        let is_queued = t.is_queue();
+                        (t, is_queued)
+                    })
+                .collect();
+
+                let _ = sender.send(Some(tracks_with_status));
             }
             SpircCommand::SetQueue(tracks, playing_track) => {
                 self.handle_set_queue(tracks, playing_track).await?
