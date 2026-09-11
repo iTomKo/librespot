@@ -226,6 +226,7 @@ struct Setup {
 
 async fn get_setup() -> Setup {
     const VALID_INITIAL_VOLUME_RANGE: RangeInclusive<u16> = 0..=100;
+    const VALID_CROSSFADE_RANGE: RangeInclusive<u64> = 0..=12;
     const VALID_VOLUME_RANGE: RangeInclusive<f64> = 0.0..=100.0;
     const VALID_NORMALISATION_KNEE_RANGE: RangeInclusive<f64> = 0.0..=10.0;
     const VALID_NORMALISATION_PREGAIN_RANGE: RangeInclusive<f64> = -10.0..=10.0;
@@ -242,6 +243,7 @@ async fn get_setup() -> Setup {
     const CACHE_SIZE_LIMIT: &str = "cache-size-limit";
     const DEVICE: &str = "device";
     const DEVICE_TYPE: &str = "device-type";
+    const CROSSFADE: &str = "crossfade";
     const DEVICE_IS_GROUP: &str = "group";
     const DISABLE_AUDIO_CACHE: &str = "disable-audio-cache";
     const DISABLE_CREDENTIAL_CACHE: &str = "disable-credential-cache";
@@ -303,6 +305,7 @@ async fn get_setup() -> Setup {
     const FORMAT_SHORT: &str = "f";
     const DISABLE_AUDIO_CACHE_SHORT: &str = "G";
     const DISABLE_GAPLESS_SHORT: &str = "g";
+    const CROSSFADE_SHORT: &str = ""; // no short flag
     const DISABLE_CREDENTIAL_CACHE_SHORT: &str = "H";
     const HELP_SHORT: &str = "h";
     const ZEROCONF_INTERFACE_SHORT: &str = "i";
@@ -424,6 +427,12 @@ async fn get_setup() -> Setup {
         DISABLE_GAPLESS_SHORT,
         DISABLE_GAPLESS,
         "Disable gapless playback.",
+    )
+    .optopt(
+        CROSSFADE_SHORT,
+        CROSSFADE,
+        "Overlap one track with the next by SECONDS, from 0 to 12. Defaults to 0, which disables crossfading.",
+        "SECONDS",
     )
     .optflag(
         EMIT_SINK_EVENTS_SHORT,
@@ -1612,17 +1621,34 @@ async fn get_setup() -> Setup {
 
         let gapless = !opt_present(DISABLE_GAPLESS);
 
+        let crossfade = opt_str(CROSSFADE)
+            .map(|seconds| match seconds.parse::<u64>() {
+                Ok(value) if VALID_CROSSFADE_RANGE.contains(&value) => Duration::from_secs(value),
+                _ => {
+                    let valid_values = &format!(
+                        "{} - {}",
+                        VALID_CROSSFADE_RANGE.start(),
+                        VALID_CROSSFADE_RANGE.end()
+                    );
+
+                    invalid_error_msg(CROSSFADE, CROSSFADE_SHORT, &seconds, valid_values, "0");
+
+                    exit(1);
+                }
+            })
+            .unwrap_or_default();
+
         let normalisation = opt_present(ENABLE_VOLUME_NORMALISATION);
 
-        let normalisation_method;
-        let normalisation_type;
-        let normalisation_pregain_db;
-        let normalisation_threshold_dbfs;
-        let normalisation_attack_cf;
-        let normalisation_release_cf;
-        let normalisation_knee_db;
-
-        if !normalisation {
+        let (
+            normalisation_method,
+            normalisation_type,
+            normalisation_pregain_db,
+            normalisation_threshold_dbfs,
+            normalisation_attack_cf,
+            normalisation_release_cf,
+            normalisation_knee_db,
+        ) = if !normalisation {
             for a in &[
                 NORMALISATION_METHOD,
                 NORMALISATION_GAIN_TYPE,
@@ -1640,175 +1666,177 @@ async fn get_setup() -> Setup {
                 }
             }
 
-            normalisation_method = player_default_config.normalisation_method;
-            normalisation_type = player_default_config.normalisation_type;
-            normalisation_pregain_db = player_default_config.normalisation_pregain_db;
-            normalisation_threshold_dbfs = player_default_config.normalisation_threshold_dbfs;
-            normalisation_attack_cf = player_default_config.normalisation_attack_cf;
-            normalisation_release_cf = player_default_config.normalisation_release_cf;
-            normalisation_knee_db = player_default_config.normalisation_knee_db;
+            (
+                player_default_config.normalisation_method,
+                player_default_config.normalisation_type,
+                player_default_config.normalisation_pregain_db,
+                player_default_config.normalisation_threshold_dbfs,
+                player_default_config.normalisation_attack_cf,
+                player_default_config.normalisation_release_cf,
+                player_default_config.normalisation_knee_db,
+            )
         } else {
-            normalisation_method = opt_str(NORMALISATION_METHOD)
-                .as_deref()
-                .map(|method| {
-                    NormalisationMethod::from_str(method).unwrap_or_else(|_| {
-                        invalid_error_msg(
-                            NORMALISATION_METHOD,
-                            NORMALISATION_METHOD_SHORT,
-                            method,
-                            "basic, dynamic",
-                            &format!("{:?}", player_default_config.normalisation_method),
-                        );
+            (
+                opt_str(NORMALISATION_METHOD)
+                    .as_deref()
+                    .map(|method| {
+                        NormalisationMethod::from_str(method).unwrap_or_else(|_| {
+                            invalid_error_msg(
+                                NORMALISATION_METHOD,
+                                NORMALISATION_METHOD_SHORT,
+                                method,
+                                "basic, dynamic",
+                                &format!("{:?}", player_default_config.normalisation_method),
+                            );
 
-                        exit(1);
+                            exit(1);
+                        })
                     })
-                })
-                .unwrap_or(player_default_config.normalisation_method);
+                    .unwrap_or(player_default_config.normalisation_method),
+                opt_str(NORMALISATION_GAIN_TYPE)
+                    .as_deref()
+                    .map(|gain_type| {
+                        NormalisationType::from_str(gain_type).unwrap_or_else(|_| {
+                            invalid_error_msg(
+                                NORMALISATION_GAIN_TYPE,
+                                NORMALISATION_GAIN_TYPE_SHORT,
+                                gain_type,
+                                "track, album, auto",
+                                &format!("{:?}", player_default_config.normalisation_type),
+                            );
 
-            normalisation_type = opt_str(NORMALISATION_GAIN_TYPE)
-                .as_deref()
-                .map(|gain_type| {
-                    NormalisationType::from_str(gain_type).unwrap_or_else(|_| {
-                        invalid_error_msg(
-                            NORMALISATION_GAIN_TYPE,
-                            NORMALISATION_GAIN_TYPE_SHORT,
-                            gain_type,
-                            "track, album, auto",
-                            &format!("{:?}", player_default_config.normalisation_type),
-                        );
-
-                        exit(1);
+                            exit(1);
+                        })
                     })
-                })
-                .unwrap_or(player_default_config.normalisation_type);
+                    .unwrap_or(player_default_config.normalisation_type),
+                opt_str(NORMALISATION_PREGAIN)
+                    .map(|pregain| match pregain.parse::<f64>() {
+                        Ok(value) if (VALID_NORMALISATION_PREGAIN_RANGE).contains(&value) => value,
+                        _ => {
+                            let valid_values = &format!(
+                                "{} - {}",
+                                VALID_NORMALISATION_PREGAIN_RANGE.start(),
+                                VALID_NORMALISATION_PREGAIN_RANGE.end()
+                            );
 
-            normalisation_pregain_db = opt_str(NORMALISATION_PREGAIN)
-                .map(|pregain| match pregain.parse::<f64>() {
-                    Ok(value) if (VALID_NORMALISATION_PREGAIN_RANGE).contains(&value) => value,
-                    _ => {
-                        let valid_values = &format!(
-                            "{} - {}",
-                            VALID_NORMALISATION_PREGAIN_RANGE.start(),
-                            VALID_NORMALISATION_PREGAIN_RANGE.end()
-                        );
+                            invalid_error_msg(
+                                NORMALISATION_PREGAIN,
+                                NORMALISATION_PREGAIN_SHORT,
+                                &pregain,
+                                valid_values,
+                                &player_default_config.normalisation_pregain_db.to_string(),
+                            );
 
-                        invalid_error_msg(
-                            NORMALISATION_PREGAIN,
-                            NORMALISATION_PREGAIN_SHORT,
-                            &pregain,
-                            valid_values,
-                            &player_default_config.normalisation_pregain_db.to_string(),
-                        );
+                            exit(1);
+                        }
+                    })
+                    .unwrap_or(player_default_config.normalisation_pregain_db),
+                opt_str(NORMALISATION_THRESHOLD)
+                    .map(|threshold| match threshold.parse::<f64>() {
+                        Ok(value) if (VALID_NORMALISATION_THRESHOLD_RANGE).contains(&value) => {
+                            value
+                        }
+                        _ => {
+                            let valid_values = &format!(
+                                "{} - {}",
+                                VALID_NORMALISATION_THRESHOLD_RANGE.start(),
+                                VALID_NORMALISATION_THRESHOLD_RANGE.end()
+                            );
 
-                        exit(1);
-                    }
-                })
-                .unwrap_or(player_default_config.normalisation_pregain_db);
+                            invalid_error_msg(
+                                NORMALISATION_THRESHOLD,
+                                NORMALISATION_THRESHOLD_SHORT,
+                                &threshold,
+                                valid_values,
+                                &player_default_config
+                                    .normalisation_threshold_dbfs
+                                    .to_string(),
+                            );
 
-            normalisation_threshold_dbfs = opt_str(NORMALISATION_THRESHOLD)
-                .map(|threshold| match threshold.parse::<f64>() {
-                    Ok(value) if (VALID_NORMALISATION_THRESHOLD_RANGE).contains(&value) => value,
-                    _ => {
-                        let valid_values = &format!(
-                            "{} - {}",
-                            VALID_NORMALISATION_THRESHOLD_RANGE.start(),
-                            VALID_NORMALISATION_THRESHOLD_RANGE.end()
-                        );
+                            exit(1);
+                        }
+                    })
+                    .unwrap_or(player_default_config.normalisation_threshold_dbfs),
+                opt_str(NORMALISATION_ATTACK)
+                    .map(|attack| match attack.parse::<u64>() {
+                        Ok(value) if (VALID_NORMALISATION_ATTACK_RANGE).contains(&value) => {
+                            duration_to_coefficient(Duration::from_millis(value))
+                        }
+                        _ => {
+                            let valid_values = &format!(
+                                "{} - {}",
+                                VALID_NORMALISATION_ATTACK_RANGE.start(),
+                                VALID_NORMALISATION_ATTACK_RANGE.end()
+                            );
 
-                        invalid_error_msg(
-                            NORMALISATION_THRESHOLD,
-                            NORMALISATION_THRESHOLD_SHORT,
-                            &threshold,
-                            valid_values,
-                            &player_default_config
-                                .normalisation_threshold_dbfs
-                                .to_string(),
-                        );
-
-                        exit(1);
-                    }
-                })
-                .unwrap_or(player_default_config.normalisation_threshold_dbfs);
-
-            normalisation_attack_cf = opt_str(NORMALISATION_ATTACK)
-                .map(|attack| match attack.parse::<u64>() {
-                    Ok(value) if (VALID_NORMALISATION_ATTACK_RANGE).contains(&value) => {
-                        duration_to_coefficient(Duration::from_millis(value))
-                    }
-                    _ => {
-                        let valid_values = &format!(
-                            "{} - {}",
-                            VALID_NORMALISATION_ATTACK_RANGE.start(),
-                            VALID_NORMALISATION_ATTACK_RANGE.end()
-                        );
-
-                        invalid_error_msg(
-                            NORMALISATION_ATTACK,
-                            NORMALISATION_ATTACK_SHORT,
-                            &attack,
-                            valid_values,
-                            &coefficient_to_duration(player_default_config.normalisation_attack_cf)
+                            invalid_error_msg(
+                                NORMALISATION_ATTACK,
+                                NORMALISATION_ATTACK_SHORT,
+                                &attack,
+                                valid_values,
+                                &coefficient_to_duration(
+                                    player_default_config.normalisation_attack_cf,
+                                )
                                 .as_millis()
                                 .to_string(),
-                        );
+                            );
 
-                        exit(1);
-                    }
-                })
-                .unwrap_or(player_default_config.normalisation_attack_cf);
+                            exit(1);
+                        }
+                    })
+                    .unwrap_or(player_default_config.normalisation_attack_cf),
+                opt_str(NORMALISATION_RELEASE)
+                    .map(|release| match release.parse::<u64>() {
+                        Ok(value) if (VALID_NORMALISATION_RELEASE_RANGE).contains(&value) => {
+                            duration_to_coefficient(Duration::from_millis(value))
+                        }
+                        _ => {
+                            let valid_values = &format!(
+                                "{} - {}",
+                                VALID_NORMALISATION_RELEASE_RANGE.start(),
+                                VALID_NORMALISATION_RELEASE_RANGE.end()
+                            );
 
-            normalisation_release_cf = opt_str(NORMALISATION_RELEASE)
-                .map(|release| match release.parse::<u64>() {
-                    Ok(value) if (VALID_NORMALISATION_RELEASE_RANGE).contains(&value) => {
-                        duration_to_coefficient(Duration::from_millis(value))
-                    }
-                    _ => {
-                        let valid_values = &format!(
-                            "{} - {}",
-                            VALID_NORMALISATION_RELEASE_RANGE.start(),
-                            VALID_NORMALISATION_RELEASE_RANGE.end()
-                        );
+                            invalid_error_msg(
+                                NORMALISATION_RELEASE,
+                                NORMALISATION_RELEASE_SHORT,
+                                &release,
+                                valid_values,
+                                &coefficient_to_duration(
+                                    player_default_config.normalisation_release_cf,
+                                )
+                                .as_millis()
+                                .to_string(),
+                            );
 
-                        invalid_error_msg(
-                            NORMALISATION_RELEASE,
-                            NORMALISATION_RELEASE_SHORT,
-                            &release,
-                            valid_values,
-                            &coefficient_to_duration(
-                                player_default_config.normalisation_release_cf,
-                            )
-                            .as_millis()
-                            .to_string(),
-                        );
+                            exit(1);
+                        }
+                    })
+                    .unwrap_or(player_default_config.normalisation_release_cf),
+                opt_str(NORMALISATION_KNEE)
+                    .map(|knee| match knee.parse::<f64>() {
+                        Ok(value) if (VALID_NORMALISATION_KNEE_RANGE).contains(&value) => value,
+                        _ => {
+                            let valid_values = &format!(
+                                "{} - {}",
+                                VALID_NORMALISATION_KNEE_RANGE.start(),
+                                VALID_NORMALISATION_KNEE_RANGE.end()
+                            );
 
-                        exit(1);
-                    }
-                })
-                .unwrap_or(player_default_config.normalisation_release_cf);
+                            invalid_error_msg(
+                                NORMALISATION_KNEE,
+                                NORMALISATION_KNEE_SHORT,
+                                &knee,
+                                valid_values,
+                                &player_default_config.normalisation_knee_db.to_string(),
+                            );
 
-            normalisation_knee_db = opt_str(NORMALISATION_KNEE)
-                .map(|knee| match knee.parse::<f64>() {
-                    Ok(value) if (VALID_NORMALISATION_KNEE_RANGE).contains(&value) => value,
-                    _ => {
-                        let valid_values = &format!(
-                            "{} - {}",
-                            VALID_NORMALISATION_KNEE_RANGE.start(),
-                            VALID_NORMALISATION_KNEE_RANGE.end()
-                        );
-
-                        invalid_error_msg(
-                            NORMALISATION_KNEE,
-                            NORMALISATION_KNEE_SHORT,
-                            &knee,
-                            valid_values,
-                            &player_default_config.normalisation_knee_db.to_string(),
-                        );
-
-                        exit(1);
-                    }
-                })
-                .unwrap_or(player_default_config.normalisation_knee_db);
-        }
+                            exit(1);
+                        }
+                    })
+                    .unwrap_or(player_default_config.normalisation_knee_db),
+            )
+        };
 
         let ditherer_name = opt_str(DITHER);
         let ditherer = match ditherer_name.as_deref() {
@@ -1848,6 +1876,7 @@ async fn get_setup() -> Setup {
         PlayerConfig {
             bitrate,
             gapless,
+            crossfade,
             passthrough,
             normalisation,
             normalisation_type,
