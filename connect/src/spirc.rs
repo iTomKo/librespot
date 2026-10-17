@@ -819,6 +819,7 @@ impl SpircTask {
             SpircCommand::ClearQueue => {
                 self.connect_state.clear_queue()?;
                 self.emit_set_queue_event();
+            }
 
             // Added for Outify
             SpircCommand::GetNextTracks(sender) => {
