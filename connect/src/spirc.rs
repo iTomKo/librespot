@@ -6,7 +6,7 @@ use crate::{
         authentication::Credentials,
         dealer::{
             manager::{BoxedStream, BoxedStreamResult, Reply, RequestReply},
-            protocol::{Command, FallbackWrapper, Message, Request},
+            protocol::{Command, Message, PayloadValue, Request},
         },
         session::UserAttributes,
         spclient::TransferRequest,
@@ -22,7 +22,6 @@ use crate::{
         explicit_content_pubsub::UserAttributesUpdate,
         player::ProvidedTrack,
         playlist4_external::PlaylistModificationInfo,
-        social_connect_v2::SessionUpdate,
         transfer_state::TransferState,
         user_attributes::UserAttributesMutation,
     },
@@ -72,6 +71,33 @@ impl From<SpircError> for Error {
     }
 }
 
+fn parse_session_update(message: Message) -> Result<serde_json::Value, Error> {
+    let PayloadValue::Json(json) = message.payload else {
+        return Err(Error::failed_precondition(
+            "session update payload is not JSON",
+        ));
+    };
+    Ok(serde_json::from_str(&json)?)
+}
+
+fn session_pause_state(update: &serde_json::Value, device_id: &str) -> Option<bool> {
+    if update.get("reason")?.as_str()? != "SESSION_MEMBER_PAUSE_CHANGED" {
+        return None;
+    }
+    let session = update.get("session")?;
+    let host = session
+        .get("host_active_device_id")
+        .or_else(|| session.get("hostActiveDeviceId"))?
+        .as_str()?;
+    if host != device_id {
+        return None;
+    }
+    session
+        .get("is_jam_paused")
+        .or_else(|| session.get("isJamPaused"))?
+        .as_bool()
+}
+
 struct SpircTask {
     player: Arc<Player>,
     mixer: Arc<dyn Mixer>,
@@ -90,7 +116,7 @@ struct SpircTask {
     connect_state_volume_update: BoxedStreamResult<SetVolumeCommand>,
     connect_state_logout_request: BoxedStreamResult<LogoutCommand>,
     playlist_update: BoxedStreamResult<PlaylistModificationInfo>,
-    session_update: BoxedStreamResult<FallbackWrapper<SessionUpdate>>,
+    session_update: BoxedStreamResult<serde_json::Value>,
     connect_state_command: BoxedStream<RequestReply>,
     user_attributes_update: BoxedStreamResult<UserAttributesUpdate>,
     user_attributes_mutation: BoxedStreamResult<UserAttributesMutation>,
@@ -219,7 +245,7 @@ impl Spirc {
 
         let session_update = session
             .dealer()
-            .listen_for("social-connect/v2/session_update", Message::try_from_json)?;
+            .listen_for("social-connect/v2/session_update", parse_session_update)?;
 
         let user_attributes_update = session
             .dealer()
@@ -1996,56 +2022,63 @@ impl SpircTask {
         Ok(())
     }
 
-    fn handle_session_update(&mut self, session_update: FallbackWrapper<SessionUpdate>) {
-        // we know that this enum value isn't present in our current proto definitions, by that
-        // the json parsing fails because the enum isn't known as proto representation
-        const WBC: &str = "WIFI_BROADCAST_CHANGED";
+    fn handle_session_update(&mut self, session_update: serde_json::Value) {
+        // Read reasons as text: Spotify sends values missing from our protobuf enum.
+        let reason = session_update
+            .get("reason")
+            .and_then(serde_json::Value::as_str);
 
-        let mut session_update = match session_update {
-            FallbackWrapper::Inner(update) => update,
-            FallbackWrapper::Fallback(value) => {
-                let fallback_inner = value.to_string();
-                if fallback_inner.contains(WBC) {
-                    log::debug!("Received SessionUpdate::{WBC}");
-                } else {
-                    log::warn!("SessionUpdate couldn't be parse correctly: {value:?}");
-                }
-                return;
-            }
+        let Some(session) = session_update.get("session") else {
+            return;
+        };
+        let Some(session_id) = session
+            .get("session_id")
+            .or_else(|| session.get("sessionId"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return;
         };
 
-        let reason = session_update.reason.enum_value();
-
-        let mut session = match session_update.session.take() {
-            None => return,
-            Some(session) => session,
-        };
-
-        let active_device = session.host_active_device_id.take();
-        if matches!(active_device, Some(ref device) if device == self.session.device_id()) {
+        let active_device = session
+            .get("host_active_device_id")
+            .or_else(|| session.get("hostActiveDeviceId"))
+            .and_then(serde_json::Value::as_str);
+        if active_device == Some(self.session.device_id()) {
             info!(
                 "session update: <{:?}> for self, current session_id {}, new session_id {}",
                 reason,
                 self.session.session_id(),
-                session.session_id
+                session_id
             );
 
-            if self.session.session_id() != session.session_id {
-                self.session.set_session_id(&session.session_id);
-                self.connect_state.set_session_id(session.session_id);
+            if self.session.session_id() != session_id {
+                self.session.set_session_id(session_id);
+                self.connect_state.set_session_id(session_id.to_owned());
             }
         } else {
             debug!("session update: <{reason:?}> from active session host: <{active_device:?}>");
         }
 
-        // this seems to be used for jams or handling the current session_id
-        //
-        // handling this event was intended to keep the playback when other clients (primarily
-        // mobile) connects, otherwise they would steel the current playback when there was no
-        // session_id provided on the initial PutStateReason::NEW_DEVICE state update
-        //
-        // by generating an initial session_id from the get-go we prevent that behavior and
-        // currently don't need to handle this event, might still be useful for later "jam" support
+        // Jam pause is separate from is_paused (which may still describe the old
+        // host playback state). Only control playback when we are the active host.
+        if !self.connect_state.is_active() {
+            return;
+        }
+        match (
+            session_pause_state(&session_update, self.session.device_id()),
+            &self.play_status,
+        ) {
+            (Some(true), SpircPlayStatus::Playing { .. } | SpircPlayStatus::LoadingPlay { .. }) => {
+                self.handle_pause()
+            }
+            (
+                Some(false),
+                SpircPlayStatus::Paused { .. } | SpircPlayStatus::LoadingPause { .. },
+            ) => self.handle_play(),
+            // Missing flags, stopped playback and duplicate updates are no-ops.
+            _ => return,
+        }
+        self.update_state = true;
     }
 
     fn position(&mut self) -> u32 {
