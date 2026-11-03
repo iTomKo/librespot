@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{self, AtomicBool},
+        atomic::{self, AtomicBool, AtomicU64},
     },
     task::Poll,
     time::Duration,
@@ -268,6 +268,8 @@ macro_rules! create_dealer {
                     message_handlers: Mutex::new(builder.message_handlers),
                     request_handlers: Mutex::new(builder.request_handlers),
                     notify_drop: Semaphore::new(0),
+                    connected_generation: AtomicU64::new(0),
+                    connection_generation: AtomicU64::new(0),
                 });
 
                 let handle = {
@@ -334,9 +336,21 @@ struct DealerShared {
     // Semaphore with 0 permits. By closing this semaphore, we indicate
     // that the actual Dealer struct has been dropped.
     notify_drop: Semaphore,
+    connected_generation: AtomicU64,
+    connection_generation: AtomicU64,
 }
 
 impl DealerShared {
+    fn mark_disconnected(&self, generation: u64) {
+        // A retiring socket must not invalidate a newer live connection.
+        let _ = self.connected_generation.compare_exchange(
+            generation,
+            0,
+            atomic::Ordering::AcqRel,
+            atomic::Ordering::Acquire,
+        );
+    }
+
     fn dispatch_message(&self, mut msg: WebsocketMessage) {
         let msg = match msg.handle_payload() {
             Ok(value) => Message {
@@ -429,6 +443,11 @@ struct Dealer {
 }
 
 impl Dealer {
+    fn connection_generation(&self) -> Option<u64> {
+        let generation = self.shared.connected_generation.load(atomic::Ordering::Acquire);
+        (generation != 0).then_some(generation)
+    }
+
     pub fn add_handler<H>(&self, uri: &str, handler: H) -> Result<(), Error>
     where
         H: RequestHandler,
@@ -520,6 +539,8 @@ async fn connect(
         .0
         .split();
 
+    let generation = shared.connection_generation.fetch_add(1, atomic::Ordering::AcqRel) + 1;
+    shared.connected_generation.store(generation, atomic::Ordering::Release);
     let (send_tx, mut send_rx) = mpsc::unbounded_channel::<WsMessage>();
 
     // Spawn a task that will forward messages from the channel to the websocket.
@@ -554,6 +575,7 @@ async fn connect(
                 }
             };
 
+            shared.mark_disconnected(generation);
             send_rx.close();
 
             // I don't trust in tokio_tungstenite's implementation of Sink::close.
@@ -577,7 +599,7 @@ async fn connect(
     let shared = Arc::clone(shared);
 
     // A task that receives messages from the web socket.
-    let receive_task = tokio::spawn(async {
+    let receive_task = tokio::spawn(async move {
         let pong_received = AtomicBool::new(true);
         let send_tx = send_tx;
         let shared = shared;
@@ -650,6 +672,7 @@ async fn connect(
             () = receive_task => ()
         }
 
+        shared.mark_disconnected(generation);
         // Try to take send_task down with us, in case it's still alive.
         let _ = send_tx.send(WsMessage::Close(None));
 

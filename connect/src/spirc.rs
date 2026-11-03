@@ -31,7 +31,7 @@ use crate::{
         {ConnectConfig, ConnectState},
     },
 };
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use librespot_protocol::context_page::ContextPage;
 use protobuf::MessageField;
 use std::{
@@ -42,7 +42,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, watch},
     time::sleep,
 };
 
@@ -80,6 +80,36 @@ fn parse_session_update(message: Message) -> Result<serde_json::Value, Error> {
     Ok(serde_json::from_str(&json)?)
 }
 
+/// A newly joined Jam hosted on this device needs its playback transferred here.
+/// Repeated snapshots for the same session must not restart playback.
+fn session_transfer_id<'a>(
+    update: &'a serde_json::Value,
+    device_id: &str,
+    current_session_id: &str,
+) -> Option<&'a str> {
+    if device_id.is_empty()
+        || matches!(
+            update.get("reason").and_then(serde_json::Value::as_str),
+            Some("SESSION_DELETED" | "YOU_LEFT" | "YOU_WERE_KICKED")
+        )
+    {
+        return None;
+    }
+    let session = update.get("session")?;
+    let host = session
+        .get("host_active_device_id")
+        .or_else(|| session.get("hostActiveDeviceId"))?
+        .as_str()?;
+    if host != device_id {
+        return None;
+    }
+    session
+        .get("session_id")
+        .or_else(|| session.get("sessionId"))?
+        .as_str()
+        .filter(|id| !id.is_empty() && *id != current_session_id)
+}
+
 fn session_pause_state(update: &serde_json::Value, device_id: &str) -> Option<bool> {
     if update.get("reason")?.as_str()? != "SESSION_MEMBER_PAUSE_CHANGED" {
         return None;
@@ -98,6 +128,90 @@ fn session_pause_state(update: &serde_json::Value, device_id: &str) -> Option<bo
         .as_bool()
 }
 
+/// Playback ownership reported by Spotify Connect, not the local decoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemotePlaybackState {
+    /// The server has not supplied enough information to make a safe decision.
+    Unknown,
+    /// No device owns playback.
+    Inactive,
+    /// This device owns playback.
+    Local,
+    /// Another device is playing or buffering.
+    Playing,
+    /// Another device explicitly reports paused playback.
+    Paused,
+    /// Another device owns playback but reports neither playing nor paused.
+    Stopped,
+}
+
+impl RemotePlaybackState {
+    fn from_cluster(cluster: &Cluster, device_id: &str) -> Self {
+        if cluster.active_device_id.is_empty() {
+            Self::Inactive
+        } else if cluster.active_device_id == device_id {
+            Self::Local
+        } else if let Some(player) = cluster.player_state.as_ref() {
+            if player.is_buffering {
+                Self::Playing
+            } else if player.is_paused {
+                Self::Paused
+            } else if player.is_playing {
+                Self::Playing
+            } else {
+                Self::Stopped
+            }
+        } else {
+            Self::Unknown
+        }
+    }
+
+    /// Whether taking playback here would respect the remote playback policy.
+    pub fn allows_transfer(self, allow_paused: bool) -> bool {
+        matches!(self, Self::Inactive | Self::Local) || (allow_paused && self == Self::Paused)
+    }
+}
+
+struct TransferGuard(Box<dyn FnOnce(RemotePlaybackState) -> bool + Send>);
+
+impl std::fmt::Debug for TransferGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TransferGuard")
+    }
+}
+
+async fn finish_guarded_transfer(
+    state: RemotePlaybackState,
+    guard: TransferGuard,
+    reply: oneshot::Sender<Result<bool, Error>>,
+    transfer: impl Future<Output = Result<bool, Error>>,
+) {
+    // Futures are lazy: declining/cancelling must never poll an action that can
+    // activate this device, transfer playback, or reload the saved queue.
+    let result = if reply.is_closed() || !(guard.0)(state) {
+        Ok(false)
+    } else {
+        transfer.await
+    };
+    let _ = reply.send(result);
+}
+
+#[derive(Clone, Copy)]
+struct RemotePlaybackSnapshot {
+    connection_generation: u64,
+    state: RemotePlaybackState,
+}
+
+impl RemotePlaybackSnapshot {
+    fn state_at(self, connection_generation: Option<u64>) -> RemotePlaybackState {
+        if connection_generation == Some(self.connection_generation) {
+            self.state
+        } else {
+            RemotePlaybackState::Unknown
+        }
+    }
+}
+
 struct SpircTask {
     player: Arc<Player>,
     mixer: Arc<dyn Mixer>,
@@ -107,6 +221,8 @@ struct SpircTask {
     /// the state management object
     connect_state: ConnectState,
     connect_established: bool,
+    connection_generation: u64,
+    remote_playback: watch::Sender<Option<RemotePlaybackSnapshot>>,
 
     play_request_id: Option<u64>,
     play_status: SpircPlayStatus,
@@ -165,6 +281,11 @@ enum SpircCommand {
     SetVolume(u16),
     Activate,
     Transfer(Option<TransferRequest>),
+    TransferIf {
+        guard: TransferGuard,
+        resume: Option<LoadRequest>,
+        reply: oneshot::Sender<Result<bool, Error>>,
+    },
     Load(LoadRequest),
     AddToQueue(SpotifyUri),
     ClearQueue,
@@ -188,6 +309,8 @@ const UPDATE_STATE_DELAY: Duration = Duration::from_millis(200);
 /// The spotify connect handle
 pub struct Spirc {
     commands: mpsc::UnboundedSender<SpircCommand>,
+    remote_playback: watch::Receiver<Option<RemotePlaybackSnapshot>>,
+    session: Session,
 
     // Added for Outify
     pub events: broadcast::Sender<PlayerEvent>,
@@ -270,6 +393,7 @@ impl Spirc {
         let _ = session.login5().auth_token().await?;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (remote_playback_tx, remote_playback_rx) = watch::channel(None);
 
         let player_events = player.get_player_event_channel();
 
@@ -283,6 +407,8 @@ impl Spirc {
 
             connect_state,
             connect_established: false,
+            connection_generation: 0,
+            remote_playback: remote_playback_tx,
 
             play_request_id: None,
             play_status: SpircPlayStatus::Stopped,
@@ -315,6 +441,8 @@ impl Spirc {
 
         let spirc = Spirc {
             commands: cmd_tx,
+            remote_playback: remote_playback_rx,
+            session: task.session.clone(),
             events: events_tx,
             runtime_event_tx,
         };
@@ -500,6 +628,40 @@ impl Spirc {
             .send(SpircCommand::Transfer(transfer_request))?)
     }
 
+    /// Waits for the first Connect snapshot. A closed runtime is not idle playback.
+    pub async fn remote_playback_state(&self) -> Result<RemotePlaybackState, Error> {
+        let mut state = self.remote_playback.clone();
+        state
+            .has_changed()
+            .map_err(|_| Error::unavailable("Connect task stopped"))?;
+        let snapshot = state
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|_| Error::unavailable("Connect task stopped"))?;
+        Ok(snapshot.map_or(RemotePlaybackState::Unknown, |snapshot| {
+            snapshot.state_at(self.session.dealer().connection_generation())
+        }))
+    }
+
+    /// Checks the latest Connect state inside the command loop before taking
+    /// playback. An optional saved context is restored only after that same check.
+    /// Returns false when the guard declines, without activating this device.
+    pub async fn transfer_if(
+        &self,
+        resume: Option<LoadRequest>,
+        guard: impl FnOnce(RemotePlaybackState) -> bool + Send + 'static,
+    ) -> Result<bool, Error> {
+        let (reply, result) = oneshot::channel();
+        self.commands.send(SpircCommand::TransferIf {
+            guard: TransferGuard(Box::new(guard)),
+            resume,
+            reply,
+        })?;
+        result
+            .await
+            .map_err(|_| Error::unavailable("Connect task stopped"))?
+    }
+
     /// Added for Outify
     ///
     /// Retrieves Vec of ProvidedTrack
@@ -620,7 +782,7 @@ impl SpircTask {
                 },
                 session_update = self.session_update.next() => unwrap! {
                     session_update,
-                    match |session_update| self.handle_session_update(session_update)
+                    match |session_update| self.handle_session_update(session_update).await
                 },
                 cmd = async { commands?.recv().await }, if commands.is_some() && self.connect_established => if let Some(cmd) = cmd {
                     if let Err(e) = self.handle_command(cmd).await {
@@ -684,6 +846,7 @@ impl SpircTask {
             }
         }
 
+        self.remote_playback.send_replace(None);
         if !self.shutdown && self.connect_state.is_active() {
             warn!("unexpected shutdown");
             if let Err(why) = self.handle_disconnect().await {
@@ -794,6 +957,59 @@ impl SpircTask {
     async fn handle_command(&mut self, cmd: SpircCommand) -> Result<(), Error> {
         trace!("Received SpircCommand::{cmd:?}");
         match cmd {
+            SpircCommand::TransferIf {
+                guard,
+                resume,
+                reply,
+            } => {
+                // Prefer already-received cluster updates over an older snapshot,
+                // even if select! happened to choose this command first.
+                while let Some(update) = self.connect_state_update.next().now_or_never() {
+                    match update {
+                        Some(Ok(update)) => {
+                            if let Err(error) = self.handle_cluster_update(update).await {
+                                let _ = reply.send(Err(error));
+                                return Ok(());
+                            }
+                        }
+                        _ => {
+                            self.record_remote_playback(None);
+                            let _ = reply.send(Ok(false));
+                            return Ok(());
+                        }
+                    }
+                }
+                let connection = self.session.dealer().connection_generation();
+                let remote = self
+                    .remote_playback
+                    .borrow()
+                    .map_or(RemotePlaybackState::Unknown, |snapshot| {
+                        snapshot.state_at(connection)
+                    });
+                if reply.is_closed() || self.session.is_invalid() || connection.is_none() {
+                    let _ = reply.send(Ok(false));
+                    return Ok(());
+                }
+                finish_guarded_transfer(remote, guard, reply, async {
+                    if let Some(request) = resume {
+                        // Keep restoring the old queue in the guarded command: a
+                        // separate Load could activate us after a declined transfer.
+                        self.handle_activate();
+                        self.handle_load(request, None, None).await.map(|()| true)
+                    } else if self.connect_state.is_active() {
+                        Ok(true)
+                    } else {
+                        let device_id = self.session.device_id();
+                        self.session
+                            .spclient()
+                            .transfer(device_id, device_id, None)
+                            .await
+                            .map(|_| true)
+                    }
+                })
+                .await;
+                return Ok(());
+            }
             SpircCommand::Shutdown => {
                 trace!("Received SpircCommand::Shutdown");
                 self.handle_pause();
@@ -1040,6 +1256,17 @@ impl SpircTask {
 
     async fn handle_connection_id_update(&mut self, connection_id: String) -> Result<(), Error> {
         trace!("Received connection ID update: {connection_id:?}");
+        self.remote_playback.send_replace(None);
+        self.connection_generation = self.session.dealer().connection_generation().unwrap_or(0);
+        // The initial response below is authoritative for the new connection;
+        // don't later restamp buffered updates from the previous socket as fresh.
+        while self
+            .connect_state_update
+            .next()
+            .now_or_never()
+            .flatten()
+            .is_some()
+        {}
         self.session.set_connection_id(&connection_id);
 
         let cluster = match self
@@ -1055,6 +1282,7 @@ impl SpircTask {
         }
         .ok_or(SpircError::FailedDealerSetup)?;
 
+        self.record_remote_playback(Some(&cluster));
         debug!(
             "successfully put connect state for {} with connection-id {connection_id}",
             self.session.device_id()
@@ -1136,6 +1364,15 @@ impl SpircTask {
         }
     }
 
+    fn record_remote_playback(&self, cluster: Option<&Cluster>) {
+        self.remote_playback.send_replace(Some(RemotePlaybackSnapshot {
+            connection_generation: self.connection_generation,
+            state: cluster.map_or(RemotePlaybackState::Unknown, |cluster| {
+                RemotePlaybackState::from_cluster(cluster, self.session.device_id())
+            }),
+        }));
+    }
+
     async fn handle_cluster_update(
         &mut self,
         mut cluster_update: ClusterUpdate,
@@ -1149,6 +1386,7 @@ impl SpircTask {
         );
 
         if let Some(cluster) = cluster_update.cluster.take() {
+            self.record_remote_playback(Some(&cluster));
             let became_inactive = self.connect_state.is_active()
                 && cluster.active_device_id != self.session.device_id();
             if became_inactive {
@@ -1161,8 +1399,11 @@ impl SpircTask {
                 //  tried: providing session_id, playback_id, track-metadata "track_player"
                 self.update_state = true;
             }
-        } else if self.connect_state.is_active() {
-            self.connect_state.became_inactive(&self.session).await?;
+        } else {
+            self.record_remote_playback(None);
+            if self.connect_state.is_active() {
+                self.connect_state.became_inactive(&self.session).await?;
+            }
         }
 
         Ok(())
@@ -2022,28 +2263,17 @@ impl SpircTask {
         Ok(())
     }
 
-    fn handle_session_update(&mut self, session_update: serde_json::Value) {
+    async fn handle_session_update(&mut self, session_update: serde_json::Value) {
         // Read reasons as text: Spotify sends values missing from our protobuf enum.
         let reason = session_update
             .get("reason")
             .and_then(serde_json::Value::as_str);
 
-        let Some(session) = session_update.get("session") else {
-            return;
-        };
-        let Some(session_id) = session
-            .get("session_id")
-            .or_else(|| session.get("sessionId"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            return;
-        };
-
-        let active_device = session
-            .get("host_active_device_id")
-            .or_else(|| session.get("hostActiveDeviceId"))
-            .and_then(serde_json::Value::as_str);
-        if active_device == Some(self.session.device_id()) {
+        if let Some(session_id) = session_transfer_id(
+            &session_update,
+            self.session.device_id(),
+            &self.session.session_id(),
+        ) {
             info!(
                 "session update: <{:?}> for self, current session_id {}, new session_id {}",
                 reason,
@@ -2051,12 +2281,22 @@ impl SpircTask {
                 session_id
             );
 
-            if self.session.session_id() != session_id {
-                self.session.set_session_id(session_id);
-                self.connect_state.set_session_id(session_id.to_owned());
+            self.session.set_session_id(session_id);
+            self.connect_state.set_session_id(session_id.to_owned());
+
+            // Transfer even if this device was already active in the old session.
+            // The regular Transfer command intentionally ignores active devices.
+            let device_id = self.session.device_id();
+            if let Err(error) = self
+                .session
+                .spclient()
+                .transfer(device_id, device_id, None)
+                .await
+            {
+                error!("could not transfer playback after joining Jam {session_id}: {error}");
             }
         } else {
-            debug!("session update: <{reason:?}> from active session host: <{active_device:?}>");
+            debug!("session update: <{reason:?}> does not require a playback transfer");
         }
 
         // Jam pause is separate from is_paused (which may still describe the old

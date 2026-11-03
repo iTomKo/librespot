@@ -82,6 +82,12 @@ impl RequestHandler for DealerRequestHandler {
 }
 
 impl DealerManager {
+    /// Identifies the current live websocket. Snapshots from an older connection
+    /// must not authorize taking playback after a reconnect.
+    pub fn connection_generation(&self) -> Option<u64> {
+        self.lock(|inner| inner.dealer.get().and_then(Dealer::connection_generation))
+    }
+
     async fn get_url(session: Session) -> GetUrlResult {
         let (host, port) = session.apresolver().resolve("dealer").await?;
         let token = session.login5().auth_token().await?.access_token;
