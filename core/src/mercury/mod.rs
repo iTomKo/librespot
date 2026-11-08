@@ -19,6 +19,12 @@ pub use self::types::*;
 mod sender;
 pub use self::sender::MercurySender;
 
+fn is_collection_update_uri(uri: &str) -> bool {
+    uri.strip_prefix("hm://collection/collection/")
+        .and_then(|rest| rest.strip_suffix("/json"))
+        .is_some_and(|user_id| !user_id.is_empty() && !user_id.contains('/'))
+}
+
 component! {
     MercuryManager : MercuryManagerInner {
         sequence: SeqGenerator<u64> = SeqGenerator::new(0),
@@ -247,6 +253,20 @@ impl MercuryManager {
             }
             Err(MercuryError::Response(response).into())
         } else if let PacketType::MercuryEvent = cmd {
+            // Collection pushes contain JSON; the path component is the account's
+            // user ID, not a fixed topic. Log text instead of a byte-array dump.
+            let collection_update = is_collection_update_uri(&response.uri);
+            if collection_update {
+                for (part, payload) in response.payload.iter().enumerate() {
+                    debug!(
+                        "collection update uri={} payload[{}]={}",
+                        response.uri,
+                        part,
+                        String::from_utf8_lossy(payload),
+                    );
+                }
+            }
+
             // TODO: This is just a workaround to make utf-8 encoded usernames work.
             // A better solution would be to use an uri struct and urlencode it directly
             // before sending while saving the subscription under its unencoded form.
@@ -276,7 +296,7 @@ impl MercuryManager {
                 });
             });
 
-            if found {
+            if found || collection_update {
                 Ok(())
             } else if self.session().dealer().handles(&response.uri) {
                 trace!("mercury response <{}> is handled by dealer", response.uri);
